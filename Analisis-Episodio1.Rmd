@@ -1,0 +1,532 @@
+---
+title: "Análisis del episodio del  30 de Agosto 2018"
+author: "Daniela Pérez"
+date: "02 de Abril de 2019"
+output: html_document
+params:
+  data: "apagon30Agosto.csv"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+# Cambiar esto de acuerdo a donde se haya realizado la recoleccion de los
+# datos fuente: 
+# * Si los datos se recogieron en linux pero se estan analizando en 
+# windows, la codificacion en el origen es "UTF-8" y en el destino "ISO8859-1".
+# * Si los datos se recogen y analizan en linux origen y destino son ambos iguales
+# a "UTF-8". 
+# * Si los datos se recogen y analizan en windows origen y destino son ambos iguales
+# a "ISO8859-1". 
+
+origen="UTF-8"
+destino="ISO8859-1"
+```
+
+## Introducción
+
+Este documento resume los análisis realizados para el muestreo en twitter de los eventos relacionados con un episodio de falla de la energía eléctrica o apagón.
+Se asume que los tweets ya fueron recogidos y están en un archivo .csv que tiene
+como nombre la fecha en la que se realizó el muestreo y que debe incluir en el
+pasado reciente uno de estos episodios. En este ejemplo se analizan los tweets del muestreo realizado para el 30 de agosto del 2018.
+
+
+### Preliminares
+
+Hay que cargar todas las librerías necesarias para el análisis.
+
+```{r}
+library(tidyverse)                    # Data manipulation
+library(stringr)                      # String manipulation
+library(knitr)                        # Report generation
+library(tidytext)                     # text mining, Silge package
+library(stopwords)                    # to clean up text
+library(lubridate)                    # to ease date manipulation
+library(wordcloud)                    # to make word clouds
+library(RColorBrewer)                 # nice colors
+library(gridExtra)                    # For graph related to
+library(scales)                       
+library(readxl)                       # For reading excel files
+library(igraph)                       # For making the bigrams graphs
+library(ggraph)                       # For making the bigrams graphs
+library(reshape2)
+
+
+```
+
+Aparecen algunas advertencias que en principio pueden ser ignoradas sin problemas.
+
+ 
+
+```{r}
+
+probe=read_csv(params$data, col_types= cols(
+  status_id = col_character(),
+  created_at = col_datetime(format = ""),
+  user_id = col_character(),
+  screen_name = col_character(),
+  text = col_character(),
+  source = col_character(),
+  is_quote = col_logical(),
+  is_retweet = col_logical(),
+  favorite_count = col_integer(),
+  retweet_count = col_integer()))
+```
+
+La siguiente instruccion es necesaria para asegurarse de obtener los caracteres 
+propios del espaÃ±ol de manera adecuada:
+
+```{r}
+probe$text=iconv(probe$text, origen,destino, sub="")
+head(probe,3)
+```
+
+La siguiente función se hace para limpiar el texto de patrones no informativos. 
+Esta función fue tomada del documento de Amat y funciona de forma similar a 
+`unnest_token` de Silge y Robinson:
+
+```{r}
+limpiar_tokenizar <- function(texto){
+  # El orden de la limpieza no es arbitrario
+  # Se convierte todo el texto a minúsculas
+  nuevo_texto <- tolower(texto)
+  # Eliminación de páginas web (palabras que empiezan por "http." seguidas
+  # de cualquier cosa que no sea un espacio)
+  nuevo_texto <- str_replace_all(nuevo_texto,"http\\S*", "")
+  # Eliminación de signos de puntuación
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:punct:]]", " ")
+  # Eliminación de números
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:digit:]]", " ")
+  # Eliminación de espacios en blanco múltiples
+  nuevo_texto <- str_replace_all(nuevo_texto,"[\\s]+", " ")
+  # Tokenización por palabras individuales
+  nuevo_texto <- str_split(nuevo_texto, " ")[[1]]
+  # Eliminación de tokens con una longitud < 2
+  nuevo_texto <- keep(.x = nuevo_texto, .p = function(x){str_length(x) > 1})
+  return(nuevo_texto)
+}
+
+```
+
+y finalmente se ejecuta esta función sobre todos los registros en `probe` para 
+obtener los datos a analizar:
+
+```{r}
+tweets <- probe %>% mutate(texto_tokenizado = map(.x = text,
+                                                   .f = limpiar_tokenizar))
+head(tweets$texto_tokenizado,3)
+```
+
+Ahora se seleccionan todas las columna excepto la del texto original del twwet. 
+La columna de "texto_tokenizado"" se despliega y se cambia de nombre a "token":
+
+```{r}
+tweets_tidy <- tweets %>% select(-text) %>% unnest()
+tweets_tidy <- tweets_tidy %>% rename(token = texto_tokenizado)
+head(tweets_tidy[,5:10])
+
+```
+
+
+### Distribución temporal de los tweets
+
+Se puede visualizar visualizar como un histograma o como un gráfico de linea. 
+
+
+```{r}
+ggplot(tweets, aes(x = as.Date(created_at))) +
+  geom_histogram(position = "identity", bins = 20, show.legend = FALSE) +
+  scale_x_date(date_labels = "%d-%m-%Y", date_breaks = "day") +
+  labs(x = "fecha de publicación", y = "número de tweets") +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+Como gráfico de línea:
+
+```{r}
+tweets_day_mes_anyo <- tweets %>% mutate(day_mes_anyo = format(created_at, "%Y-%m-%d"))
+tweets_day_mes_anyo %>% group_by(day_mes_anyo) %>% summarise(n = n()) %>%
+  ggplot(aes(x = day_mes_anyo, y = n)) +
+  geom_line(group=1) +
+  labs(title = "Número de tweets publicados", x = "fecha de publicación",
+       y = "número de tweets") +
+  theme(axis.text.x = element_text(angle = 90, size = 8),
+        legend.position = "bottom")
+```
+
+### Palabras más utilizadas
+
+¿Cuáles fueron las 30 palabras más utilizadas en los tweets?:
+
+```{r}
+tweets_tidy %>% group_by(token) %>% count(token) %>% 
+  arrange(desc(n)) %>% print(n=30)
+
+```
+Se observa que esto incluye un conjunto de palabras no muy interesantes. Las cuales se proceden a 
+excluir del análisis ,es decir, articulos, preposiciones, ente otras del espaÃñol (de, en, el, 
+etc.).
+A este conjunto de palabras normalmente se les conoce como "stopwords". 
+Se está usando la lista proporcionada para el español en el paquete 
+stopwords de R (https://github.com/quanteda/stopwords) que a su vez proviene de
+snowball (http://snowballstem.org/projects.html).
+
+
+```{r}
+# Esto es una lista de palabras a excluir del análisis
+lista_stopwords <-stopwords("es")
+
+lista_stopwords.df <-as.data.frame(lista_stopwords,stringsAsFactors = FALSE)
+colnames(lista_stopwords.df)<-"token"
+
+# Quitar de la lista de stopwords no, sin, sí, ya que son otras formas de negación
+
+lista_stopwords.df = lista_stopwords.df %>% filter(token != "sí",token != "no",token != "sin")
+
+# palabras sin stopwords
+
+tweets_tidy2 <- tweets_tidy %>% anti_join(lista_stopwords.df)
+
+```
+
+y de nuevo visualizamos las palabras más comúnes:
+
+```{r}
+tweets_tidy2 %>% group_by(token) %>% count(token) %>% 
+  top_n(10, n) %>% arrange(desc(n)) %>% print(n=30)
+
+```
+
+
+Se puede visualizar mejor esto gráficamente con un histograma de todas aquellas
+palabras que tienen frecuencias superiores a 500:
+
+```{r}
+tweets_tidy2 %>% group_by(token) %>% count(token) %>%
+arrange(desc(n)) %>% filter(n>500) %>% 
+  ggplot(aes(x =reorder(token,n) , y = n)) +
+  geom_col() +
+  theme_bw() +
+  labs(y = "", x = "") +
+  theme(legend.position = "none") +
+  coord_flip() 
+
+```
+
+Tambiése puede ver la información anterior como una nube de palabras.
+En `tidy3` se guarda la lista de palabras con su frecuencia:
+
+```{r}
+
+tidy3 = tweets_tidy2 %>% group_by(token) %>% count(token) %>% 
+   arrange(desc(n)) 
+wordcloud(words = tidy3$token, freq = tidy3$n,
+          max.words = 300, random.order = FALSE, rot.per = 0.35,
+          colors = brewer.pal(8, "Dark2"))
+
+```
+
+
+
+### Análisis de Sentimientos
+
+Para realizar el análisis de sentimientos es necesario tener un lexicón que 
+indica para un idioma o lenguaje, la polaridad de las palabras: si es positiva,
+negativa o neutra. Las palabras no incluidas en el lexicón se presumen neutras.
+En español no pudimos ubicar un lexicón nativo o propio. En el idioma inglés hay 
+varios. Uno de los cuales ha sido traducido al espaÃñol y a otros idiomas y es el 
+que utilizamos aquí. 
+Se usó el lexicón: NRC Emotion Lexicon cuya referencia es:
+
+> Saif Mohammad and Peter Turney. Crowdsourcing a Word-Emotion Association Lexicon. Computational Intelligence, 29(3): 436-465, 2013. Wiley Blackwell Publishing Ltd.
+
+Primero, se lee y se formatea el lexicón:
+```{r}
+# Leer la base de datos
+sentiments <- read_excel("NRC-Emotion-Lexicon-v0.92-spanish.xlsx", 
+                         col_types = c("text", "text", "numeric", 
+                                       "numeric", "blank", "blank", "blank", 
+                                       "blank", "blank", "blank", "blank", 
+                                       "blank"))
+
+# Cambiar los nombres de las columnas 
+names(sentiments) <- c("ingles","palabra","Positivo","Negativo")
+
+# Calcular el sentimiento de cada palabra
+sentimientos <-sentiments %>% mutate (valor = Positivo + -1*Negativo)
+```
+
+
+
+```{r}
+# Eliminar palabras repetidas:
+sentimientos <- arrange(sentimientos,palabra) %>%
+  distinct(palabra,.keep_all = TRUE)
+
+head(sentimientos)
+
+```
+
+
+Ahora se calcula el valor o sentimiento neto de cada palabra en el lexicón:
+
+```{r}
+sentimientos <-sentiments %>% mutate (valor = Positivo + -1*Negativo)
+head(sentimientos)
+
+```
+
+Y se añade esta información a la lista de tokens extraídos de los tweets:
+
+```{r}
+# Añadir el sentimiento a cada palabra en la lista de tweets
+tweets_sent <- inner_join(x = tweets_tidy, y = sentimientos,
+                          by = c("token" = "palabra"))
+head(head(tweets_sent[,5:14]))
+
+```
+
+Ahora, se calcula el sentimiento promedio de cada tweet:
+
+```{r}
+ts1=tweets_sent %>% 
+  group_by(status_id) %>% 
+  summarise(sentimiento_promedio = sum(valor))
+head(ts1)
+```
+
+Luego se calcula el porcentaje de tweets positivos, negativos y neutros
+en el registro:
+
+```{r}
+# Calcula el porcentaje de positivos, negativos y neutros d
+ts2=tweets_sent %>% group_by(status_id) %>%
+  summarise(sentimiento_promedio = sum(valor)) %>%
+  summarise(positivos = 100 * sum(sentimiento_promedio > 0) / n(),
+            neutros = 100 * sum(sentimiento_promedio == 0) / n(),
+            negativos = 100 * sum(sentimiento_promedio < 0) / n())
+
+ts2
+
+```
+
+Gráficamente:
+
+```{r}
+ 
+  ts2%>%
+  gather(key = "sentimiento", value = "valor") %>%
+  ggplot(aes(x =sentimiento, y = valor, fill = sentimiento)) + guides(fill=FALSE) +
+  geom_col(position = "dodge", color = "black") + coord_flip() +
+  theme_bw()
+```
+
+
+#### Palabras positivas y negativas más comúnes
+
+Se cuenta el número de veces que aparece cada palabra y se ordena por su frecuencia.
+
+```{r}
+ sent_count = tweets_sent %>% count(token, valor, sort = TRUE) %>%
+    ungroup()
+head(sent_count)
+  
+```
+
+Se puede ver esto como un histograma:
+
+```{r}
+sent_count %>%
+    filter(valor !=0) %>%
+    mutate(valor=ifelse(valor== -1,"negativo", "positivo")) %>%
+    group_by(valor) %>%
+    top_n(10) %>%
+    ungroup() %>%
+    mutate(token = reorder(token, n)) %>%
+    ggplot(aes(token, n, fill = valor)) +
+    geom_col(show.legend = FALSE) +
+    facet_wrap(~valor, scales = "free_y") +
+    labs(y = "Contribución al sentimiento",
+         x = NULL) +
+    coord_flip()  
+
+```
+
+ 
+También se puede visualizar esta información en forma de nubes de palabras:
+
+```{r}
+
+sent_count %>%
+   filter(valor !=0) %>%
+   mutate(valor=ifelse(valor== -1,"negativo", "positivo")) %>%
+   acast(token ~ valor, value.var = "n", fill = 0) %>%
+   comparison.cloud(colors = c("gray20", "gray80"),
+                    max.words = 100) 
+ 
+```
+
+#### Evolución Temporal
+```{r}
+tweets_sent %>% mutate(anyo = year(created_at),
+                       mes = month(created_at),
+                       dia = day(created_at),
+                       anyo_mes_dia = ymd(paste(anyo, mes, dia, sep="-"),truncated=2)) %>%
+  group_by(anyo_mes_dia) %>%
+  summarise(sentimiento = mean(valor)) %>%
+  ungroup() %>%
+  ggplot(aes(x = anyo_mes_dia, y = sentimiento, color = sentimiento)) +
+  geom_point() +
+  geom_smooth() +
+  labs(x = "fecha de publicación") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+```
+
+
+### Relación entre las palabras: bigramas
+
+Al igual que antes, se debe limpiar el texto y para eso se usa la función
+`limpiar`. Esta vez en vez de seleccionar palabras individuales seleccionamos 
+conjuntos de dos palabras contiguas y para eso utilizamos la función `unnest_token`:
+
+```{r}
+# Función para limpiar el texto:
+limpiar <- function(texto){
+  # El orden de la limpieza no es arbitrario
+  # Se convierte todo el texto a minúsculas
+  nuevo_texto <- tolower(texto)
+  # Eliminación de páginas web (palabras que empiezan por "http." seguidas
+  # de cualquier cosa que no sea un espacio)
+  nuevo_texto <- str_replace_all(nuevo_texto,"http\\S*", "")
+  # Eliminación de signos de puntuación
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:punct:]]", " ")
+  # Eliminación de números
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:digit:]]", " ")
+  # Eliminación de espacios en blanco múltiples
+  nuevo_texto <- str_replace_all(nuevo_texto,"[\\s]+", " ")
+  return(nuevo_texto)
+}
+
+```
+
+Ahora si, se seleccionan los bigramas:
+
+
+```{r}
+bigramas <- tweets %>% mutate(text = limpiar(text)) %>%
+  select(text) %>%
+  unnest_tokens(input = text, output = "bigrama",
+                token = "ngrams",n = 2, drop = TRUE)
+head(bigramas)
+```
+
+Al igual que con las palabras individuales podemos contar el número de veces que  aparece cada bigrama y omitir los bigramas conformados por palabras no interesantes que se encuentran en la lista de "stopwords".
+```{r}
+bigramas %>% count(bigrama, sort = TRUE)
+```
+
+Para poder quitar las palabras no interesantes, debemos primero separar los  bigramas, quitar las palabras y luego rehacer los bigramas de nuevo:
+
+```{r}
+bigrams_separados <- bigramas %>% separate(bigrama, c("palabra1", "palabra2"),
+                                           sep = " ")
+head(bigrams_separados)
+```
+
+Ahora quitamos los que contienen una palabra no interesante:
+
+```{r}
+bigrams_separados <- bigrams_separados %>%
+  filter(!palabra1 %in% lista_stopwords.df$token) %>%
+  filter(!palabra2 %in% lista_stopwords.df$token)
+head(bigrams_separados)
+```
+
+Se unen de nuevo y se vuelve a contar la frecuencia de su ocurrencia:
+
+```{r}
+bigramas <- bigrams_separados %>%
+  unite(bigrama, palabra1, palabra2, sep = " ")
+# Nuevo contaje para identificar los bigramas más frecuentes
+bigramas %>% count(bigrama, sort = TRUE) %>% print(n = 20)
+```
+
+Se puede visualizar esto gráficamente así. Las dos versiones son equivalentes.
+
+
+```{r}
+graph <- bigramas %>%
+  separate(bigrama, c("palabra1", "palabra2"), sep = " ") %>%
+  count(palabra1, palabra2, sort = TRUE) %>%
+  filter(n >100) %>% graph_from_data_frame(directed = FALSE)
+set.seed(123)
+plot(graph, vertex.label.font = 2,
+     vertex.label.color = "black",
+     vertex.label.cex = 0.7, edge.color = "gray85")
+
+ggraph(graph = graph) +
+  geom_edge_link(colour = "gray70") +
+  geom_node_text(aes(label = name), size = 4) +
+  theme_bw()
+
+```
+
+
+Es importante tener en cuenta este análisis para interpretar correctamente el análisis de sentimientos que se hace a continuación.
+
+#### Revisando el análisis de Sentimientos usando bigramas
+
+El uso de una negación antes de una palabra dada puede cambiar completamente la polaridad del texto. Sólo como ejemplo, se procede a ver cuantas veces la palabra *no*
+es la primera palabra de una bigrama:
+
+```{r}
+no_palabras =bigrams_separados %>%
+  filter(palabra1 == "no") %>%
+  count(palabra1, palabra2, sort = TRUE)
+no_palabras
+```
+
+Ahora, unimos la valoración del sentimiento. Si una palabra tiene polaridad  positiva pero es precedida por no, su polaridad se invierte y viceversa. 
+
+```{r}
+no_palabras2 <- bigrams_separados %>%
+  filter(palabra1 == "no") %>%
+  inner_join(sentimientos, by = c("palabra2" = "palabra")) %>%
+  count(palabra2, valor, sort = TRUE) %>%
+  ungroup()
+no_palabras2
+
+```
+
+Existen otras formas de negación en el español. Repetiremos el análisis anterior 
+usando, además de *no*: *sin, nunca, jamás, tampoco*. Se anexa la valoración
+pero se excluyen las palabras con valoración 0 o neutras:
+
+```{r}
+negacion_palabras <- c("no", "nunca", "sin","jamas","tampoco")
+negadas_palabras <- bigrams_separados %>%
+  filter(palabra1 %in% negacion_palabras) %>%
+  inner_join(sentimientos, by = c("palabra2" = "palabra")) %>%
+  count(palabra1, palabra2, valor, sort = TRUE) %>%
+  ungroup() %>%
+  filter(valor != 0)
+negadas_palabras
+```
+
+Examinando esto gráficamente, se aprecia de la siguiente manera:
+
+```{r}
+negadas_palabras %>%
+  mutate(contribucion = n * valor) %>%
+  arrange(desc(abs(contribucion))) %>%
+  head(20) %>%
+  mutate(palabra2 = reorder(palabra2, contribucion)) %>%
+  ggplot(aes(palabra2, n * valor, fill = n * valor > 0)) +
+  geom_col(show.legend = FALSE) +
+  xlab("Palabras precedidas por una negación") +
+  ylab("Valor del sentimiento x número de ocurrencias") +
+  coord_flip()
+
+```
